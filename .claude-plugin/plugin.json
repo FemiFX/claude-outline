@@ -1,0 +1,11 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "claude-outline",
+  "version": "0.1.0",
+  "description": "Outline wiki for Claude agents: create collections, write, read, search, update and delete documents through Outline's built-in MCP server.",
+  "author": {
+    "name": "Oluwafemi Akinlosotu"
+  },
+  "repository": "https://github.com/FemiFX/claude-outline",
+  "license": "MIT"
+}

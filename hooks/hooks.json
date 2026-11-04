@@ -1,0 +1,46 @@
+{
+  "description": "Points agents to the outline skill; Outline deletes need a person's confirmation; new collections are made workspace-visible.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '%s' '{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"Outline wiki: before creating, editing or deleting anything in Outline, load the `outline` skill (claude-outline plugin) and follow it.\"}}'"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__.*outline.*__delete_(document|collection|comment)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"Outline delete: confirm the exact item before it is removed.\"}}'"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "grep -q -E 'api/(collections|documents|comments|attachments|shares|users)\\.(delete|archive)' && printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"Outline delete via the REST API: confirm the exact item before it is removed.\"}}' || true"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__.*outline.*__create_collection",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/collection_visibility.py\""
+          }
+        ]
+      }
+    ]
+  }
+}

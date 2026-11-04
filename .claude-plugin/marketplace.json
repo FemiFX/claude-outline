@@ -1,0 +1,14 @@
+{
+  "name": "claude-outline",
+  "description": "Outline wiki access for Claude agents through Outline's built-in MCP server.",
+  "owner": {
+    "name": "Oluwafemi Akinlosotu"
+  },
+  "plugins": [
+    {
+      "name": "claude-outline",
+      "source": "./",
+      "description": "Outline wiki for Claude agents via Outline's built-in MCP server."
+    }
+  ]
+}

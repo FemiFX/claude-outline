@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "outline": {
+      "type": "http",
+      "url": "${OUTLINE_BASE_URL}/mcp",
+      "headers": {
+        "Authorization": "Bearer ${OUTLINE_API_KEY}"
+      }
+    }
+  }
+}
