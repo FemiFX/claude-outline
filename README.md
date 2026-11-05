@@ -73,6 +73,55 @@ shared collection**. Name it for every client at once in Outline's **Settings �
 additional guidance**, e.g. *"Agents without a shell publish research into the collection
 'Research'."* — Outline passes that text to every MCP client.
 
+## Session log (optional)
+
+Writes one Outline page per Claude Code session: what you set out to do, what you asked, how
+Claude responded, what you agreed and why, what got done, where you stopped, and where that
+sits against the milestones of the project it served. It is **off** until you configure it.
+
+### How it works
+
+- **SessionEnd** queues the session and starts a background worker, so closing Claude isn't
+  delayed. The worker condenses the transcript, keeping prompts, Claude's replies, your answers
+  to its questions and the tool names. It drops tool output and redacts anything that looks like
+  a key or token. Then it asks a smaller model (`claude -p`, no tools) to fill the entry template.
+- The entry goes under **Session log → YYYY-MM**. It links to the project page it served, so
+  Outline's backlinks on each project list its sessions. Resumed sessions update their entry.
+- The worker reads your Focus and Projects pages for context. It never edits them, never
+  deletes anything, and only writes over the REST API.
+- If Outline can't be reached, the entry waits in a queue and **SessionStart** retries it.
+- The `worklog` skill writes the entry mid-session ("log this session"). Clients without a
+  shell can use the same skill through Outline's MCP connector.
+
+### Set it up
+
+1. Create a **private** collection containing a Focus page, a Projects page with an Unassigned
+   child, a Session log page, and a template called "Session entry template". Create it in
+   Outline or through the REST API. MCP-created collections are made workspace-visible by
+   this plugin, and a work log usually shouldn't be.
+2. Put the ids in `~/.claude/outline-worklog/config.json` (chmod 600) or in your environment:
+
+   | Variable | Meaning |
+   |---|---|
+   | `OUTLINE_WORKLOG_COLLECTION_ID` | The collection. **Required; the feature is off without it.** |
+   | `OUTLINE_WORKLOG_LOG_PARENT_ID` | The Session log page. Required. |
+   | `OUTLINE_WORKLOG_PROJECTS_ID` | Projects page; its children are your projects. |
+   | `OUTLINE_WORKLOG_FOCUS_ID` | Focus page. |
+   | `OUTLINE_WORKLOG_UNASSIGNED_ID` | Where sessions that fit no project link to. |
+   | `OUTLINE_WORKLOG_MODEL` | Summary model. Default `claude-sonnet-5-5`. |
+   | `OUTLINE_WORKLOG_MIN_TURNS` | Skip sessions with fewer prompts. Default `2`. |
+   | `OUTLINE_WORKLOG_EXCLUDE_DIRS` | Colon-separated folders that are never logged. |
+
+   `OUTLINE_BASE_URL` and `OUTLINE_API_KEY` are read from the environment. If Claude Code was
+   started without your shell profile, as can happen in editors, they are read from a login
+   shell instead. The key is never written to disk by the plugin.
+3. Optional: put your own `summarizer-prompt.md` or `session-entry-template.md` in
+   `~/.claude/outline-worklog/` to override the ones in `worklog/`.
+4. Test with `python3 hooks/worklog.py now --cwd <a project folder> --dry-run`.
+
+The worker logs to `~/.claude/outline-worklog/worklog.log`. Each logged session costs one
+`claude -p` call with the condensed transcript.
+
 ## Security
 
 - The API key has the full rights of its user. Use a dedicated Outline user if you want agent

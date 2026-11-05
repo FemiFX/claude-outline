@@ -1,5 +1,5 @@
 {
-  "description": "Points agents to the outline skill; Outline deletes need a person's confirmation; new collections are made workspace-visible.",
+  "description": "Points agents to the outline skill; Outline deletes need a person's confirmation; new collections are made workspace-visible; optional session log (off unless configured).",
   "hooks": {
     "SessionStart": [
       {
@@ -7,6 +7,15 @@
           {
             "type": "command",
             "command": "printf '%s' '{\"hookSpecificOutput\": {\"hookEventName\": \"SessionStart\", \"additionalContext\": \"Outline wiki: before creating, editing or deleting anything in Outline, load the `outline` skill (claude-outline plugin) and follow it.\"}}'"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/worklog.py\" flush",
+            "timeout": 15
           }
         ]
       }
@@ -38,6 +47,17 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/collection_visibility.py\""
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/worklog.py\" session-end",
+            "timeout": 20
           }
         ]
       }
