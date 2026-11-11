@@ -194,12 +194,12 @@ def condense(transcript_path):
                 continue
             if e.get("isSidechain") or e.get("isMeta"):
                 continue
-            ts = e.get("timestamp")
-            if ts:
-                first_ts = first_ts or ts
-                last_ts = ts
             msg = e.get("message") or {}
             role = msg.get("role") or e.get("type")
+            ts = e.get("timestamp")
+            if ts and role in ("user", "assistant"):  # ignore bookkeeping entries
+                first_ts = first_ts or ts
+                last_ts = ts
             content = msg.get("content")
             if role == "user":
                 for b in content if isinstance(content, list) else []:
