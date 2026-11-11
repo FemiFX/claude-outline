@@ -81,8 +81,8 @@ sits against the milestones of the project it served. It is **off** until you co
 
 ### How it works
 
-- **SessionEnd** queues the session and starts a background worker, so closing Claude isn't
-  delayed. The worker condenses the transcript, keeping prompts, Claude's replies, your answers
+- **SessionEnd** only saves the session to a queue and starts a background worker. Claude Code
+  gives SessionEnd hooks about 1.5 seconds in total, so the hook does nothing else. The worker condenses the transcript, keeping prompts, Claude's replies, your answers
   to its questions and the tool names. It drops tool output and redacts anything that looks like
   a key or token. Then it asks a smaller model (`claude -p`, no tools) to fill the entry template.
 - The entry goes under **Session log → YYYY-MM**. It links to the project page it served, so
@@ -90,6 +90,10 @@ sits against the milestones of the project it served. It is **off** until you co
 - The worker reads your Focus and Projects pages for context. It never edits them, never
   deletes anything, and only writes over the REST API.
 - If Outline can't be reached, the entry waits in a queue and **SessionStart** retries it.
+- **Catch-up sweep:** each time the worker runs, it also logs sessions from the last 7 days
+  that have been idle for an hour and have no entry, or changed after their entry. That
+  covers force-quits, crashes and SessionEnd hooks that were cut off. An open session that
+  goes idle is logged too, and its entry is updated when it changes again.
 - The `worklog` skill writes the entry mid-session ("log this session"). Clients without a
   shell can use the same skill through Outline's MCP connector.
 
@@ -111,13 +115,19 @@ sits against the milestones of the project it served. It is **off** until you co
    | `OUTLINE_WORKLOG_MODEL` | Summary model. Default `claude-sonnet-5-5`. |
    | `OUTLINE_WORKLOG_MIN_TURNS` | Skip sessions with fewer prompts. Default `2`. |
    | `OUTLINE_WORKLOG_EXCLUDE_DIRS` | Colon-separated folders that are never logged. |
+   | `OUTLINE_WORKLOG_CATCHUP_DAYS` | How far back the sweep looks. Default `7`; `0` turns it off. |
+   | `OUTLINE_WORKLOG_IDLE_MINUTES` | How long a session must be idle before the sweep logs it. Default `60`. |
+   | `OUTLINE_WORKLOG_CATCHUP_MAX` | Most sessions the sweep logs per run. Default `10`. |
 
    `OUTLINE_BASE_URL` and `OUTLINE_API_KEY` are read from the environment. If Claude Code was
    started without your shell profile, as can happen in editors, they are read from a login
    shell instead. The key is never written to disk by the plugin.
 3. Optional: put your own `summarizer-prompt.md` or `session-entry-template.md` in
    `~/.claude/outline-worklog/` to override the ones in `worklog/`.
-4. Test with `python3 hooks/worklog.py now --cwd <a project folder> --dry-run`.
+4. Optional but recommended: give SessionEnd hooks more time by adding
+   `"CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS": "10000"` to the `env` block of
+   `~/.claude/settings.json`. Other SessionEnd hooks you run benefit too.
+5. Test with `python3 hooks/worklog.py now --cwd <a project folder> --dry-run`.
 
 The worker logs to `~/.claude/outline-worklog/worklog.log`. Each logged session costs one
 `claude -p` call with the condensed transcript.

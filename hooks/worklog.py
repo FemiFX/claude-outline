@@ -2,10 +2,12 @@
 """Session log for Outline: one entry per Claude Code session, linked to a project.
 
 Modes
-  session-end   SessionEnd hook. Checks the guards, queues the job, starts a detached
-                worker and returns at once, so closing Claude is never slowed down.
-  flush         SessionStart hook. Starts a detached worker for anything still queued.
-  worker        Processes the queue (internal).
+  session-end   SessionEnd hook. Saves the event to the queue and starts a detached worker.
+                Does nothing else: Claude Code gives SessionEnd hooks about 1.5 s in total.
+  flush         SessionStart hook. Starts a detached worker.
+  worker        Processes the queue, then runs the catch-up sweep (internal).
+                The sweep logs sessions from the last few days that went idle without
+                being logged, e.g. after a force-quit or a SessionEnd hook that was cut off.
   now           Logs the current session in the foreground and prints the entry URL.
                 Used by the /worklog skill. Options: --cwd DIR, --session ID, --dry-run.
 
@@ -32,6 +34,7 @@ HOME_DIR = Path.home() / ".claude" / "outline-worklog"
 QUEUE = HOME_DIR / "queue"
 LOG = HOME_DIR / "worklog.log"
 SESSIONS = HOME_DIR / "sessions.json"
+SKIPPED = HOME_DIR / "skipped.json"
 CONFIG_FILE = HOME_DIR / "config.json"
 
 KEYS = [
@@ -39,7 +42,9 @@ KEYS = [
     "OUTLINE_WORKLOG_COLLECTION_ID", "OUTLINE_WORKLOG_LOG_PARENT_ID",
     "OUTLINE_WORKLOG_PROJECTS_ID", "OUTLINE_WORKLOG_FOCUS_ID", "OUTLINE_WORKLOG_UNASSIGNED_ID",
     "OUTLINE_WORKLOG_MODEL", "OUTLINE_WORKLOG_MIN_TURNS", "OUTLINE_WORKLOG_EXCLUDE_DIRS",
+    "OUTLINE_WORKLOG_CATCHUP_DAYS", "OUTLINE_WORKLOG_IDLE_MINUTES", "OUTLINE_WORKLOG_CATCHUP_MAX",
 ]
+REQUIRED_FROM_SHELL = ["OUTLINE_BASE_URL", "OUTLINE_API_KEY"]
 
 MAX_TRANSCRIPT_CHARS = 120_000
 MAX_USER_CHARS = 4_000
@@ -100,13 +105,19 @@ def load_config():
                 cfg[k] = str(v)
     except Exception:
         pass
-    missing = [k for k in KEYS if k not in cfg]
-    # Only users who turned the feature on pay for the shell lookup.
+    # Only the address and key are worth a login-shell lookup, and only for users who
+    # turned the feature on. Never called from the SessionEnd hook itself.
+    missing = [k for k in REQUIRED_FROM_SHELL if k not in cfg]
     if missing and (cfg.get("OUTLINE_WORKLOG_COLLECTION_ID") or CONFIG_FILE.exists()):
         cfg.update(login_shell_env(missing))
     cfg.setdefault("OUTLINE_WORKLOG_MODEL", "claude-sonnet-5-5")
     cfg.setdefault("OUTLINE_WORKLOG_MIN_TURNS", "2")
     return cfg
+
+
+def feature_on():
+    """Cheap check for the hooks: no shell, no network, no config parsing."""
+    return bool(os.environ.get("OUTLINE_WORKLOG_COLLECTION_ID")) or CONFIG_FILE.exists()
 
 
 def enabled(cfg):
@@ -371,8 +382,21 @@ def month_page(api, cfg, month):
     return d
 
 
+def session_record(sessions, sid):
+    """sessions.json values were plain doc ids before 0.2.1; those count as logged when
+    the file was last written."""
+    rec = sessions.get(sid)
+    if isinstance(rec, str):
+        try:
+            when = SESSIONS.stat().st_mtime
+        except OSError:
+            when = 0
+        return {"doc": rec, "logged_at": when}
+    return rec
+
+
 def existing_entry(api, cfg, session_id):
-    known = read_json(SESSIONS, {}).get(session_id)
+    known = (session_record(read_json(SESSIONS, {}), session_id) or {}).get("doc")
     if known:
         try:
             d = api("documents.info", {"id": known})
@@ -421,7 +445,8 @@ def publish(api, cfg, job, entry, projects, unassigned):
             pass
         action = "created"
     sessions = read_json(SESSIONS, {})
-    sessions[sid] = doc["id"]
+    sessions = {k: session_record(sessions, k) for k in sessions}
+    sessions[sid] = {"doc": doc["id"], "logged_at": time.time()}
     write_json(SESSIONS, sessions)
     return action, api.url(doc)
 
@@ -488,9 +513,16 @@ def run_queue():
         lock.unlink(missing_ok=True)
         return run_queue()
     try:
+        cfg = load_config()
+        if not enabled(cfg):
+            log("session log is configured but OUTLINE_BASE_URL / OUTLINE_API_KEY or the ids are missing")
+            return
         for path in sorted(QUEUE.glob("*.json"), key=lambda p: p.stat().st_mtime):
             item = read_json(path, None)
             if not item:
+                path.unlink(missing_ok=True)
+                continue
+            if "meta" not in item and excluded(cfg, item.get("cwd")):
                 path.unlink(missing_ok=True)
                 continue
             if "meta" in item:
@@ -516,8 +548,81 @@ def run_queue():
                     path.rename(path.with_suffix(".failed"))
                 else:
                     write_json(path, job)
+        sweep(cfg)
     finally:
         lock.unlink(missing_ok=True)
+
+
+def transcript_cwd(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for i, raw in enumerate(f):
+                if i > 200:
+                    break
+                try:
+                    cwd = json.loads(raw).get("cwd")
+                except ValueError:
+                    continue
+                if cwd:
+                    return cwd
+    except OSError:
+        pass
+    return ""
+
+
+def sweep(cfg):
+    """Log sessions that went idle without an entry, or changed after their entry.
+    Covers force-quits and SessionEnd hooks that were cut off."""
+    days = float(cfg.get("OUTLINE_WORKLOG_CATCHUP_DAYS", "7"))
+    if days <= 0:
+        return
+    idle = float(cfg.get("OUTLINE_WORKLOG_IDLE_MINUTES", "60")) * 60
+    limit = int(cfg.get("OUTLINE_WORKLOG_CATCHUP_MAX", "10"))
+    now = time.time()
+    sessions = read_json(SESSIONS, {})
+    skipped = read_json(SKIPPED, {})
+    queued = {p.stem for p in QUEUE.glob("*.json")}
+    run_slug = re.sub(r"[^A-Za-z0-9]", "-", str(HOME_DIR / "run"))
+    candidates = []
+    for p in (Path.home() / ".claude" / "projects").glob("*/*.jsonl"):
+        if p.parent.name == run_slug or p.stem in queued:
+            continue
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue
+        if now - mtime > days * 86400 or now - mtime < idle:
+            continue
+        rec = session_record(sessions, p.stem)
+        if rec and rec.get("logged_at", 0) >= mtime:
+            continue
+        if skipped.get(p.stem, 0) >= mtime:
+            continue
+        candidates.append((mtime, p))
+    for mtime, p in sorted(candidates)[:limit]:
+        sid = p.stem
+        cwd = transcript_cwd(p)
+        if excluded(cfg, cwd):
+            skipped[sid] = mtime
+            write_json(SKIPPED, skipped)
+            continue
+        job, why = build_job({"transcript_path": str(p), "cwd": cwd, "session_id": sid,
+                              "reason": "catch-up"})
+        if not job:
+            log(f"catch-up skipped {sid}: {why}")
+            skipped[sid] = mtime
+            write_json(SKIPPED, skipped)
+            continue
+        try:
+            action, url = process(job)
+            log(f"catch-up {action} {url} for session {sid}")
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+            log(f"catch-up stopped, Outline unreachable: {exc}")
+            break
+        except Exception as exc:
+            log(f"catch-up failed {sid}: {exc}")
+            skipped[sid] = mtime
+            write_json(SKIPPED, skipped)
 
 
 # ── entry points ─────────────────────────────────────────────────────────────
@@ -528,12 +633,12 @@ def main():
         return  # the summariser's own session, or a worker: never log it
 
     if mode == "session-end":
+        # Keep this path tiny: Claude Code kills SessionEnd hooks after about 1.5 s.
+        if not feature_on():
+            return
         try:
             event = json.load(sys.stdin)
         except ValueError:
-            return
-        cfg = load_config()
-        if not enabled(cfg) or excluded(cfg, event.get("cwd")):
             return
         if not event.get("session_id"):
             return
@@ -542,8 +647,8 @@ def main():
         spawn_worker()
 
     elif mode == "flush":
-        if any(QUEUE.glob("*.json")) and enabled(load_config()):
-            spawn_worker()
+        if feature_on():
+            spawn_worker()  # drains the queue and runs the catch-up sweep
 
     elif mode == "worker":
         run_queue()
