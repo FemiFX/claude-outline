@@ -599,7 +599,10 @@ def sweep(cfg):
         if skipped.get(p.stem, 0) >= mtime:
             continue
         candidates.append((mtime, p))
-    for mtime, p in sorted(candidates)[:limit]:
+    summarised = 0
+    for mtime, p in sorted(candidates):
+        if summarised >= limit:  # the cap counts summaries, not cheap skips
+            break
         sid = p.stem
         cwd = transcript_cwd(p)
         if excluded(cfg, cwd):
@@ -613,6 +616,7 @@ def sweep(cfg):
             skipped[sid] = mtime
             write_json(SKIPPED, skipped)
             continue
+        summarised += 1
         try:
             action, url = process(job)
             log(f"catch-up {action} {url} for session {sid}")
